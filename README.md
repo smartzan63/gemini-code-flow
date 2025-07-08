@@ -12,6 +12,8 @@
 
 Gemini Code Flow brings the powerful SPARC methodology and multi-agent orchestration capabilities to Google's Gemini CLI platform. This tool enables developers to leverage multiple AI agents working in parallel to write, test, and optimize code systematically.
 
+Each agent is run as a separate **Gemini CLI** process inside its own `tmux` session, allowing the orchestrator to manage a swarm of workers concurrently.
+
 ## ✨ Features
 
 - **Multi-Agent Orchestration**: Run up to 10 Gemini agents in parallel
@@ -46,6 +48,7 @@ Gemini Code Flow brings the powerful SPARC methodology and multi-agent orchestra
 ### Prerequisites
 - Node.js 18+
 - Gemini CLI installed globally
+- `tmux` installed for parallel agent execution
 
 ```bash
 # Install Gemini CLI first
@@ -92,7 +95,7 @@ export GEMINI_API_KEY="your-api-key-here"
 # Initialize a new project with SPARC
 gemini-flow init --sparc
 
-# Start the orchestrator
+# Start the orchestrator (spawns Gemini CLI agents in tmux)
 gemini-flow start
 
 # Run a specific SPARC mode

@@ -31,6 +31,7 @@ export class Orchestrator extends EventEmitter {
       memoryPath: config.memoryPath || './gemini-memory.json',
       apiKey: config.apiKey,
       authMethod: config.authMethod || 'google-account',
+      useCli: config.useCli ?? true,
       modes: config.modes || {}
     };
     this.maxConcurrentAgents = this.config.maxAgents;
@@ -38,8 +39,7 @@ export class Orchestrator extends EventEmitter {
     
     // Initialize components
     this.geminiClient = new GeminiClient({
-      apiKey: this.config.apiKey || process.env.GEMINI_API_KEY,
-      authMethod: this.config.authMethod || 'google-account',
+      useTmux: true,
     });
     
     this.memoryManager = new MemoryManager(this.config.memoryPath);

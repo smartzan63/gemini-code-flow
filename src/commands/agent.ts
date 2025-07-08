@@ -14,13 +14,8 @@ export class AgentCommand {
     const spinner = ora(`🤖 Agent working on task...`).start();
 
     try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        throw new Error('GEMINI_API_KEY environment variable is required');
-      }
-
-      const client = new GeminiClient({ apiKey });
-      const prompt = `You are an AI assistant in ${mode} mode. 
+      const client = new GeminiClient();
+      const prompt = `You are an AI assistant in ${mode} mode.
 
 Task: ${task}
 
