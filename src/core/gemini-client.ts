@@ -1,216 +1,135 @@
-/**
- * Gemini Client Integration
- * Adapted from Claude Code Flow by ruvnet
- */
-
-import { GoogleGenerativeAI, GenerativeModel, Part } from '@google/generative-ai';
+import { spawn } from 'child_process';
+import fs from 'fs-extra';
+import path from 'path';
+import os from 'os';
+import { promisify } from 'util';
+import { exec as execCb } from 'child_process';
 import { AgentMode } from '../types';
 import { RateLimiter, GEMINI_RATE_LIMITS } from '../utils/rate-limiter';
 
+const exec = promisify(execCb);
+
 export interface GeminiConfig {
-  apiKey?: string;
-  authMethod?: 'google-account' | 'api-key';
   model?: string;
   temperature?: number;
   maxOutputTokens?: number;
+  /** run each request inside tmux session */
+  useTmux?: boolean;
+  /** directory for temp output files when using tmux */
+  tmpDir?: string;
 }
 
 export class GeminiClient {
-  private genAI: GoogleGenerativeAI;
-  private model: GenerativeModel;
   private config: GeminiConfig;
   private rateLimiter: RateLimiter;
   private dailyRateLimiter: RateLimiter;
 
-  constructor(config: GeminiConfig) {
+  constructor(config: GeminiConfig = {}) {
     this.config = config;
-    
-    // Handle authentication method
-    const authMethod = config.authMethod || 'google-account';
-    
-    if (authMethod === 'api-key') {
-      if (!config.apiKey) {
-        throw new Error('API key is required when using api-key authentication method');
-      }
-      this.genAI = new GoogleGenerativeAI(config.apiKey);
-    } else {
-      // For google-account method, let Gemini CLI handle authentication
-      // This assumes the user has already authenticated via `gemini` command
-      const apiKey = config.apiKey || process.env.GEMINI_API_KEY;
-      
-      if (!apiKey && config.authMethod === 'api-key') {
-        throw new Error('API key is required when using api-key authentication method. Set GEMINI_API_KEY environment variable.');
-      }
-      
-      if (!apiKey && config.authMethod !== 'google-account') {
-        console.warn('No API key provided. Ensure you are authenticated via Google account or set GEMINI_API_KEY');
-      }
-      
-      this.genAI = new GoogleGenerativeAI(apiKey || '');
-    }
-    
-    this.model = this.genAI.getGenerativeModel({
-      model: config.model || 'gemini-1.5-pro',
-    });
-    
-    // Initialize rate limiters
     this.rateLimiter = new RateLimiter(GEMINI_RATE_LIMITS.personal);
     this.dailyRateLimiter = new RateLimiter(GEMINI_RATE_LIMITS.daily);
   }
 
-  /**
-   * Execute a prompt with the Gemini model
-   */
   async execute(prompt: string, mode: AgentMode): Promise<string> {
     return this.rateLimiter.execute(async () => {
       return this.dailyRateLimiter.execute(async () => {
-        try {
-          const generationConfig = {
-            temperature: this.getModeTemperature(mode),
-            maxOutputTokens: this.config.maxOutputTokens || 8192,
-          };
-
-          const result = await this.model.generateContent({
-            contents: [{ role: 'user', parts: [{ text: prompt }] }],
-            generationConfig,
-          });
-
-          const response = await result.response;
-          return response.text();
-        } catch (error) {
-          throw new Error(`Gemini execution failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        if (this.config.useTmux) {
+          return this.executeInTmux(prompt);
         }
+        return this.executeDirect(prompt);
       });
     });
   }
 
-  /**
-   * Execute with multimodal input (images, PDFs, etc.)
-   */
   async executeMultimodal(
     prompt: string,
-    files: Array<{ mimeType: string; data: Buffer }>,
+    _files: Array<{ mimeType: string; data: Buffer }>,
     mode: AgentMode
   ): Promise<string> {
-    return this.rateLimiter.execute(async () => {
-      return this.dailyRateLimiter.execute(async () => {
-        try {
-          const parts: Part[] = [{ text: prompt }];
-          
-          // Add file parts
-          for (const file of files) {
-            parts.push({
-              inlineData: {
-                mimeType: file.mimeType,
-                data: file.data.toString('base64'),
-              },
-            });
-          }
+    // Basic implementation uses text prompt only
+    return this.execute(prompt, mode);
+  }
 
-          const generationConfig = {
-            temperature: this.getModeTemperature(mode),
-            maxOutputTokens: this.config.maxOutputTokens || 8192,
-          };
+  async *streamExecute(prompt: string, _mode: AgentMode): AsyncGenerator<string> {
+    await this.rateLimiter.checkLimit();
+    await this.dailyRateLimiter.checkLimit();
 
-          const result = await this.model.generateContent({
-            contents: [{ role: 'user', parts }],
-            generationConfig,
-          });
+    const args: string[] = [];
+    if (this.config.model) {
+      args.push('--model', this.config.model);
+    }
+    args.push('-p', prompt);
 
-          const response = await result.response;
-          return response.text();
-        } catch (error) {
-          throw new Error(`Gemini multimodal execution failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    const child = spawn('gemini', args);
+
+    child.stderr.on('data', () => {}); // suppress
+
+    for await (const chunk of child.stdout) {
+      yield chunk.toString();
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      child.on('close', code => {
+        code === 0 ? resolve() : reject(new Error(`Gemini CLI exited with code ${code}`));
+      });
+      child.on('error', reject);
+    });
+  }
+
+  private async executeDirect(prompt: string): Promise<string> {
+    const args: string[] = [];
+    if (this.config.model) {
+      args.push('--model', this.config.model);
+    }
+    args.push('-p', prompt);
+
+    return new Promise((resolve, reject) => {
+      const child = spawn('gemini', args);
+      let out = '';
+      let err = '';
+      child.stdout.on('data', d => (out += d.toString()));
+      child.stderr.on('data', d => (err += d.toString()));
+      child.on('error', reject);
+      child.on('close', code => {
+        if (code === 0) {
+          resolve(out.trim());
+        } else {
+          reject(new Error(`Gemini CLI exited with code ${code}: ${err.trim()}`));
         }
       });
     });
   }
 
-  /**
-   * Stream response for real-time output
-   */
-  async *streamExecute(prompt: string, mode: AgentMode): AsyncGenerator<string> {
-    // Rate limit the initial request
-    await this.rateLimiter.checkLimit();
-    await this.dailyRateLimiter.checkLimit();
-    
-    try {
-      const generationConfig = {
-        temperature: this.getModeTemperature(mode),
-        maxOutputTokens: this.config.maxOutputTokens || 8192,
-      };
-
-      const result = await this.model.generateContentStream({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig,
-      });
-
-      for await (const chunk of result.stream) {
-        const chunkText = chunk.text();
-        if (chunkText) {
-          yield chunkText;
-        }
+  private async executeInTmux(prompt: string): Promise<string> {
+    const session = `gem-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+    const tmpDir = this.config.tmpDir || os.tmpdir();
+    const outputPath = path.join(tmpDir, `${session}.log`);
+    const safePrompt = prompt.replace(/"/g, '\"');
+    const command = `gemini -p \"${safePrompt}\" > ${outputPath} 2>&1`;
+    await exec(`tmux new-session -d -s ${session} "${command}"`);
+    // wait for session to finish
+    while (true) {
+      try {
+        await exec(`tmux has-session -t ${session}`);
+        await new Promise(res => setTimeout(res, 500));
+      } catch {
+        break;
       }
-    } catch (error) {
-      throw new Error(`Gemini stream execution failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
+    const result = await fs.readFile(outputPath, 'utf8');
+    await fs.remove(outputPath);
+    return result.trim();
   }
 
-  /**
-   * Get temperature setting for specific mode
-   */
-  private getModeTemperature(mode: AgentMode): number {
-    const modeTemperatures: Partial<Record<AgentMode, number>> = {
-      architect: 0.7,
-      coder: 0.3,
-      tester: 0.2,
-      debugger: 0.1,
-      security: 0.2,
-      documentation: 0.5,
-      integrator: 0.4,
-      monitor: 0.2,
-      optimizer: 0.3,
-      ask: 0.8,
-      devops: 0.3,
-      tutorial: 0.6,
-      database: 0.2,
-      specification: 0.4,
-      mcp: 0.3,
-      orchestrator: 0.5,
-      designer: 0.8,
-    };
-
-    return modeTemperatures[mode] ?? this.config.temperature ?? 0.5;
+  getRateLimitStatus() {
+    return { minute: this.rateLimiter.getStats(), daily: this.dailyRateLimiter.getStats() };
   }
 
-  /**
-   * Get current rate limit status
-   */
-  getRateLimitStatus(): { minute: ReturnType<RateLimiter['getStats']>; daily: ReturnType<RateLimiter['getStats']> } {
-    return {
-      minute: this.rateLimiter.getStats(),
-      daily: this.dailyRateLimiter.getStats(),
-    };
-  }
-
-  /**
-   * Check model availability and quota
-   */
   async checkHealth(): Promise<boolean> {
     try {
-      const result = await this.model.generateContent({
-        contents: [{ role: 'user', parts: [{ text: 'Hello' }] }],
-        generationConfig: { maxOutputTokens: 10 },
-      });
-      
-      return !!result.response;
-    } catch (error: unknown) {
-      if (error instanceof Error) {
-        console.error('Gemini health check failed:', error.message);
-      } else {
-        console.error('Gemini health check failed with unknown error:', error);
-      }
+      await this.execute('ping', 'coder');
+      return true;
+    } catch {
       return false;
     }
-  }
-}
+  }}

@@ -77,6 +77,8 @@ export interface OrchestratorConfig {
   memoryPath: string;
   apiKey?: string;
   authMethod?: 'google-account' | 'api-key';
+  /** Use gemini CLI instead of API */
+  useCli?: boolean;
   modes: Partial<Record<AgentMode, Partial<SparcMode>>>;
 }
 
@@ -90,5 +92,5 @@ export interface ConfigFile {
   memoryPath?: string;
   authMethod?: 'google-account' | 'api-key';
   apiKey?: string;
-  modes?: Partial<Record<AgentMode, Partial<SparcMode>>>;
-}
+  useCli?: boolean;
+  modes?: Partial<Record<AgentMode, Partial<SparcMode>>>;}

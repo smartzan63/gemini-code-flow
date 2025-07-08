@@ -49,11 +49,7 @@ export class SparcCommand {
     const spinner = ora(`${this.getModeIcon(mode as AgentMode)} Running ${mode} mode...`).start();
 
     try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      const client = new GeminiClient({ 
-        apiKey,
-        authMethod: apiKey ? 'api-key' : 'google-account'
-      });
+      const client = new GeminiClient();
       const prompt = this.buildSparcPrompt(mode as AgentMode, task);
 
       let result: string;
